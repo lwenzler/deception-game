@@ -1,0 +1,278 @@
+---
+title: "deception game - final analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo = FALSE, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE,
+                      message = FALSE, 
+                      collapse = TRUE,
+                      cache = TRUE,
+                      dev.args = list(bg = 'transparent'), 
+                      fig.align ='center', 
+                      fig.height = 3, 
+                      fig.widht = 4)
+
+require(rmdformats)
+require(tidyverse)
+require(faintr)
+require(brms)
+options(mc.cores = parallel::detectCores())
+theme_set(theme_bw() + theme(plot.background=element_blank()))
+```
+
+
+# Loading and inspecting the data
+
+```{r}
+raw_data <- read_csv("results_285_deception-game-final_Group+12-3.csv") #load data
+show(raw_data) #show tibble with data
+```
+
+### General properties of the data
+#### Mean time spent on experiment
+
+```{r}
+raw_data %>% pull(timeSpent) %>% summary()
+```
+
+#### Overview of reaction times for all trials
+
+```{r}
+raw_data %>% 
+  ggplot(aes(x = RT)) +
+  geom_histogram(binwidth = 500, color = "darkblue", fill = "lightblue") +
+  xlim(0,60000)
+```
+
+#### Plot of important variables 
+
+```{r}
+opponent_prop <- raw_data %>%
+  filter(trial_name == "Main Trials", condition == "opponent") %>%
+  select(condition, cue, response) %>%
+  count(cue, response) %>%
+  mutate(prop = n/sum(n/3))
+
+teammate_prop <- raw_data %>%
+  filter(trial_name == "Main Trials", condition == "teammate") %>%
+  select(condition, cue, response) %>%
+  count(cue, response) %>%
+  mutate(prop = n/sum(n/3))
+
+```
+
+```{r}
+opponent_prop %>%
+  ggplot(aes(x = cue, y = prop, fill = response)) +
+  geom_bar(stat = "identity",position = "dodge", width = 0.5) +
+  scale_fill_brewer(palette = "Blues") +
+  ylim(0, 1) +
+  labs(
+    x = "cues",
+    y = "proportions",
+    title = "Receiver choice in the deception Game",
+    subtitle = "OPPONENT condition"
+  )
+```
+
+```{r}
+teammate_prop %>%
+  ggplot(aes(x = cue, y = prop, fill = response)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.5, ) +
+  scale_fill_brewer(palette = "Blues") +
+  ylim(0, 1) +
+  labs(
+    x = "cues",
+    y = "proportions",
+    title = "Receiver choices in the deception game",
+    subtitle = "TEAMMATE condition"
+  )
+```
+
+# Summarizing and cleaning the data
+
+We shorten the data by only selecting relevant variables
+
+```{r}
+short_data <- raw_data %>%
+  select(submission_id, RT, condition, cue, response, timeSpent, trial_name, age, gender) # select only necessary data
+
+head(short_data)
+```
+
+## Individual-level
+### Individual-level reaction times
+
+We take a look at the reaction times of every participant
+
+```{r}
+dg_individual_summary <- short_data %>% 
+  filter(trial_name == "Main Trials") %>%    # look at only data from main trials
+  group_by(submission_id) %>%         # calculate mean RT for each individual
+  summarize(mean_RT = mean(RT))
+              
+head(dg_individual_summary)
+```
+
+### Individual-level error rates
+
+We look at the error rates of every participant. The error rate is dependent on whether the participants choose the response truth when presented with an informative cue, independent of the condition. They need to pass 10 out of 10 in order to get an error rate of 1. Only participants with an error rate of 1 will be included in the final analysis, because otherwise we can conclude that they did not understand the task properly.
+
+```{r}
+
+error_rates <- short_data %>%
+  filter(trial_name == "Main Trials", cue == "helpful") %>% # only main trials with helpful cue are important
+  group_by(submission_id) %>%
+  summarise(error_rate = sum(response == "truth") / 10) # error rate dependent on how often participant chooses truth                                                           when helpful cue is given
+
+dg_individual_summary <- full_join(dg_individual_summary,error_rates, by = "submission_id")
+head(dg_individual_summary)
+  
+```
+
+### Plot of summary information
+
+Summary information with mean reaction times and error rates
+
+```{r}
+dg_individual_summary %>% 
+  ggplot(aes(x = mean_RT, y = error_rate)) +
+  geom_point()
+```
+Summary information with participants highlighted that will be excluded. They were excluded either because their mean reaction time was to fast ( mean reaction time > 3 seconds ) indicating that the participant did not really think about his/her answer or because their error rate was smaller than 1.
+
+```{r}
+# add column outlier that indicates which participants to exclude later on
+dg_individual_summary <- dg_individual_summary %>% 
+  mutate(outlier = case_when(mean_RT < 3000 ~ TRUE, # outlier if mean RT < 3 seconds
+                             error_rate < 1 ~ TRUE, # outlier if error rate < 1
+                             TRUE ~ FALSE))
+
+# plot summary information with outliers highlighted as red squares
+dg_individual_summary %>% 
+  ggplot(aes(x = mean_RT, y = error_rate)) +
+  geom_point() +
+  geom_point(data = filter(dg_individual_summary, outlier == TRUE),
+             color = "firebrick", shape = "cross", size = 5)
+
+```
+### Remove participants identified as outlier
+
+```{r, message=TRUE}
+d <- full_join(short_data, dg_individual_summary, by = "submission_id") # merge the tibbles
+d <- filter(d, outlier == FALSE) # remove every participant identified as outlier
+
+
+message(
+  "We excluded ", sum(dg_individual_summary$outlier) , 
+  " participants for suspicious mean RTs and higher error rates."
+)
+```
+
+## Trial-level
+### Trial-level reaction times
+
+We take a look at the overall distribution of reaction times, since it is conceivable that individual trials resulted in early accidental key presses.
+
+```{r}
+d %>%
+  filter(trial_name == "Main Trials") %>%
+  ggplot(aes(x = RT)) +
+  geom_histogram(binwidth = 1000, color = "darkblue", fill = "lightblue") +
+  xlim(0,60000) # limits in order to get good visualization
+```
+
+We take a look at how many trials take longer than 1 minute for trials to acknowledge all data
+```{r}
+d %>%
+  filter(RT > 60000) %>%
+  count()
+
+```
+
+We decided that every trial with a reaction time smaller than 2 seconds will be excluded, because it indicates that the person did not think about what to choose properly and rather choose a random map accidentally.
+
+```{r}
+d_cleaned <- filter(d, trial_name == "Main Trials", RT > 2000)
+```
+
+
+Find data about participants' age
+```{r}
+d_cleaned %>% select(age) %>% summary()
+```
+
+## Main data
+
+### Clean main data
+
+```{r}
+d_cleaned %>% filter( response != "decoy")
+```
+
+### Overview of counts important for hypothesis
+
+```{r}
+lure_misleading_tibble <- d_cleaned %>%
+  filter(cue == "misleading", response == "lure") %>%
+  group_by(condition) %>%
+  summarise(lure_misleading = n())
+
+lure_uninformative_tibble <- d_cleaned %>%
+  filter(cue == "uninformative", response == "lure" ) %>%
+  group_by(condition) %>%
+  summarise(lure_uninformative = n())
+
+merge(lure_misleading_tibble,lure_uninformative_tibble)
+
+
+```
+
+Participants in the opponent condition when represented with misleading and when represented with uninformative evidence choose the lure less often than participants in the teammate condition.
+
+
+# Data analysis
+## Brm model (logistic regression with multiple predictors)
+
+We choose a logistic regression model in order to test our hypotheses for significant evidence, since we have a binary categorical dependent variable.
+
+```{r}
+d_brm<- brm(
+  # specify what to explain in terms of what
+  #  using the formula syntax
+  formula = response ~ cue * condition,
+  # which data to use
+  data = d_cleaned,
+  family = 'categorical'
+)
+```
+
+```{r}
+summary(d_brm)
+```
+
+## Hypothesis testing
+
+1 Hypothesis:
+
+Participants in the teammate condition are significantly more likely to choose the Lure when presented with misleading evidence than participants in the opponent condition.
+   --> (lure, misleading, teammate) > (lure, misleading, opponent)
+       = (lure, misleading, teammate) - (lure, misleading, opponent) > 0
+       
+```{r}
+hypothesis(d_brm,"(mulure_Intercept + mulure_conditionteammate + mulure_cuemisleading + mulure_cuemisleading:conditionteammate) - (mulure_Intercept + mulure_cuemisleading) > 0")
+```
+The evidence ratio of suggests strong evidence for the hypothesis that participants in the teammate condition are significantly more likely to choose the Lure when presented with misleading evidence than participants in the opponent condition.
+
+
+2 Hypothesis:
+Participants in the teammate condition are significantly more likely to choose the Lure when presented with uninformative evidence than participants in the opponent condition
+   --> (lure, uninformative, teammate) > (lure, uninformative, opponent)
+       = (lure, uninformative, teammate) - (lure, uninformative, opponent) > 0
+
+```{r}
+hypothesis(d_brm,"(mulure_Intercept + mulure_cueuninformative + mulure_conditionteammate + mulure_cueuninformative:conditionteammate) - (mulure_Intercept + mulure_cueuninformative) > 0")
+```
+The evidence ratio suggests no significant evidence for the hypothesis that participants in the teammate condition are significantly more likely to choose the Lure when presented with uninformative evidence than participants in the opponent condition.

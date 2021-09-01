@@ -16,6 +16,9 @@ deception-game_final.Rmd
 Experimental-Design.pdf
 // This file contains the experimental design of the study.
 
+Final-Paper_Group 12.pdf
+// This file contains our Final Paper.
+
 Preregistration-Report.pdf
 // This file contains the preregistration report of the study.
 
